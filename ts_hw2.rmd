@@ -1,0 +1,316 @@
+---
+title: "DF检验临界值表模拟"
+author: "齐玥3120319078"
+date: "2021年3月31日"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: cerulean
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(R.utils)
+```
+
+# 原理分析
+## 四种情况简介
+经济时间序列数据，特别是宏观经济数据，常常呈现明显的时间趋势，但仅从图像上无法确定数据是由*带趋势项的稳定过程*，还是由*带常数项的单位根过程*产生的。
+
+若对带趋势的稳定过程$y_t=c+rt+u_t$中的参数$c$和$r$做t-检验，即使数据不是由确定性趋势产生的，而是由带常数项的单位根过程产生的，$t_T$统计量仍会呈显著性。
+
+因此，在检验时间趋势之前，要先确定在时间序列中是否存在单位根。只有在单位根假设被拒绝后，才采用确定性趋势模型，并对其中的参数检验。
+
+在情况1和情况2中，先考虑$y_t=\rho y_{t-1}+\epsilon_t$和$y_t=\alpha+\rho y_{t-1}+\epsilon_t$中，对单位根假设$H_0:\rho=1$做检验。
+
+情况3考虑在$y_t=\alpha+\rho y_{t-1}+\epsilon_t$中检验单位根假设，此时上文中的两个统计量都有正态的极限分布，可以从正态分布和t-分布表中得到临界值，此处不进行模拟。
+
+而情况4考虑在$y_t=\alpha+\rho y_{t-1}+\delta t+\epsilon_t$中检验单位根。
+
+李子奈《高等计量经济学》建议：
+
+*  按照先模型三（情况4）、再模型二（情况2）、最后模型一（情况1）。
+*  先检验情况4是否有单位根，若拒绝原假设（无单位根），则检验结束；否则存在单位根，继续检验是否存在确定性趋势。
+*  再检验情况2是否有单位根，若拒绝原假设（无单位根），则检验结束；否则存在单位根，继续检验是否存在漂移项。
+*  最后检验情况1，若拒绝原假设，则无单位根；否则存在单位根。检验结束。
+
+## $T(\hat \rho_T-1)$和$t(\hat\rho)$的估计原理
+为了模拟上述情况1,2和4的临界值表1和2，本文分别根据$T(\hat \rho_T-1)$和$t(\hat\rho)$的极限分布模拟足够多的统计量值（本文用10,000个），再对统计量排序根据显著性水平计算临界值。这两个非标准随机变量都可以表示成维纳过程的函数。
+
+由泛函中心极限定理，部分和$\sqrt TX_T(r)=\frac{1}{\sqrt T}\sum_{t=1}^{T_r}\epsilon_t$弱收敛于维纳过程$B(r)$，即$\sqrt TX_T(r)\Rightarrow B(r)$，本文据此模拟维纳过程
+
+```{r intro1}
+#设置全局变量，时间序列长度、显著性水平和MCMC模拟次数
+T.vec <- c(25,50,100,250,500,5000)
+alpha.vec <- c(0.01,0.025,0.05,0.1,0.9,0.95,0.975,0.99)
+reps <- 10000
+
+#输入用于计算统计量的维纳过程函数f(W,r)，r在情况4中用到，以及画密度图的函数；输出临界值表
+getCriticalValue <- function(wienerFunction=NA,plotDensity=NA,delta.f=NA){
+  table.cv <- c()#保存临界值
+  table.DFstats <- c()#保存模拟的统计量
+  for(T in T.vec){
+    DFstats <- rep(NA,reps)
+    r <- seq(0,1,length.out = T)
+    for(i in 1:reps){
+      if(is.na(delta.f)){
+        epsilon <- rnorm(T)
+        W <- 1/sqrt(T)*cumsum(epsilon)#部分和弱收敛于维纳过程
+        DFstats[i] <- wienerFunction(W,r)#统计量是维纳过程的函数
+      }else{
+        DFstats[i] <- calcFStats(delta.f,T)#否则计算F统计量
+      }
+    }
+    criticalValues <- sort(DFstats)[alpha.vec*reps]#排序后获取临界值
+    table.cv <- rbind(table.cv, criticalValues)
+    table.DFstats <- rbind(table.DFstats, DFstats)#6行reps列
+  }
+  plotDensity(table.cv,table.DFstats,T.vec)
+  rownames(table.cv) <- as.character(T.vec)
+  colnames(table.cv) <- as.character(alpha.vec)
+  return(round(table.cv,2))
+}
+
+#画每个统计量和N(0,1)的密度函数图，标出5%分位数
+plotDensity <- function(table.cv,table.DFstats,T.vec){
+  for(i in 1:length(table.DFstats[,1])){
+    data <- table.DFstats[i,]
+    data.nna <- data[!is.na(data)]#情况4出现了空缺值，这里忽略掉
+    plot(density(data.nna),col=c("purple"),main=paste("DF统计量密度函数(T=",T.vec[i],")"))
+    xax <- seq(-4,4,by=.1)
+    lines(xax,dnorm(xax),col=c("chartreuse4"))
+    abline(v=table.cv[i,3])
+  }
+}
+
+```
+
+## $F_T$的估计原理
+为了模拟上述情况2和4的临界值表3，由于不知道$F_T$统计量的极限分布，本文采取MCMC方法估计$F_T$统计量，具体步骤如下：
+
+*  在完整模型的基础上，按数据生成过程DGP生成长度(T)不同的数据，令$y_0=1$，$\epsilon, \alpha, \delta$由高斯白噪声产生，$\rho$由$U(0,1)$生成；
+*  对原设成立和不成立的情形建立回归模型，计算残差平方和$\tilde R^2$和$\hat R^2$，进而计算检验统计量$F_T$；
+*  重复上述过程N次（本文取10,000次），对得到的N个统计量排序，则第$N\alpha$个数据即为显著性水平为$\alpha$的临界值。
+
+其中，检验统计量$F_T=\frac{(\tilde R^2-\hat R^2)/2}{\hat R^2/(T-q)}$。
+```{r intro2}
+#DGP，输入alphpa(漂移项),rho(一阶滞后项的系数),delta(确定性趋势系数),T(时长)，据此生成不同的时间序列
+generateData <- function(alpha, rho, delta, T){
+  yt <- rep(NA,T)
+    epsilon <- rnorm(T)
+    time <- seq(1,T)
+    y0 <- 0
+    yt[1] = alpha + rho*y0+ delta*time[1] + epsilon[1]
+    for(i in 2:T){
+      yt[i] = alpha + rho*yt[i-1]+ delta*time[i] + epsilon[i]
+    }
+    if(delta!=0){#加上确定性趋势项
+      df <- cbind(yt[-T],yt[-1],time[-T])
+    }
+    df <- cbind(yt[-T],yt[-1])
+  return(df)
+}
+
+#输入x,y和alpha（用于判断回归模型是否有截距项），输出Rss
+getRss <- function(x,y,alpha=-1){
+  if(alpha==0){
+    model <- lm(y~x-1)
+  }else{
+    model <- lm(y~x)
+  }
+  Rss <- sum((model$fitted.values-y)^2)
+  return(Rss)
+}
+
+#输入完整模型和原假设成立时的受限模型模拟的数据，以及是否有截距项，输出模拟的F统计量
+getFValue <- function(dfFull, dfRestr,delta.f,alpha=-1){
+  Rss.full <- getRss(dfFull[,-1],dfFull[,1])
+  Rss.restr <- getRss(dfRestr[,-1],dfRestr[,1],alpha)
+  T <- length(dfFull[,1])+1
+  if(delta.f){
+    F.value <- (Rss.restr-Rss.full)/2/(Rss.full/(T-3))
+  }else{
+    F.value <- (Rss.restr-Rss.full)/2/(Rss.full/(T-2))
+  }
+  return(round(F.value,2))
+}
+
+
+#输入是否情况有delta（若有delta就是情况4，否则是情况2）和T，获取相应情况下的F_T临界值表
+calcFStats <- function(delta.f,T){
+  rho = runif(n=1)
+  if(delta.f){
+    delta = rnorm(1)
+    dfFull <- generateData(0, rho, delta, T)
+    dfRestricted <- generateData(0, rho, 0, T)
+    Fstats <- getFValue(dfFull, dfRestricted,delta.f)
+  }else{
+    alpha = rnorm(1)
+    dfFull <- generateData(alpha, rho, 0, T)
+    dfRestricted <- generateData(0, rho, 0, T)
+    Fstats <- getFValue(dfFull, dfRestricted,delta.f,alpha=0)
+  }
+  return(Fstats)
+}
+```
+
+# 情况一
+在情况一中，所用模型为$y_t=\rho y_{t-1}+\epsilon_t$。
+$$H_0: \rho=1$$
+$$H_1: \rho<1$$
+
+## $T(\hat \rho_T-1)$模拟结果
+原假设$\rho=1$成立时，表1统计量极限分布：$T(\hat \rho_T-1)=\frac{\frac 1 2[W(1)^2-1]}{\int_{0}^{1}W(r)^2dr}$.
+
+```{r t1s1}
+subplots(nrow=2, ncol=3)
+#表1情况1（无常数项）
+t1s1 <-  function(W,r){
+  DFstats <- (W[1]^2-1)/(2*mean(W^2))
+  return(DFstats)
+}
+table1.s1 <- getCriticalValue(t1s1,plotDensity)
+print(table1.s1)
+```
+
+## $t(\hat\rho)$模拟结果
+原假设$\rho=1$成立时，表2统计量极限分布$t(\hat\rho)=\frac{\hat \rho_T-1}{s(\hat\rho)}=\frac{\frac 1 2 [W(1)^2-1]}{(\int_{0}^{1}W(r)^2dr)^\frac 1 2}$.
+```{r t2s1}
+subplots(nrow=2, ncol=3)
+#表2情况1（无常数项）
+t2s1 <-  function(W,r){
+  DFstats <- (W[1]^2-1)/(2*sqrt(mean(W^2)))
+  return(DFstats)
+}
+table2.s1 <- getCriticalValue(t2s1,plotDensity)
+print(table2.s1)
+```
+
+
+# 情况二
+在情况二中，所用模型为$y_t=\alpha+\rho y_{t-1}+\epsilon_t$。
+$$H_0: \alpha=0,\rho=1$$
+$$H_1: \alpha\ne0,\rho<1$$
+
+## $T(\hat \rho_T-1)$模拟结果
+原假设$\alpha=0,\rho=1$成立时，表1统计量极限分布：$T(\hat \rho_T-1)=\frac{\frac 1 2(W^2(1)-1)-W(1)\int_0^1W(r)dr}{\int_0^1W^2(r)dr-(\int_0^1W(r)dr)^2}$.
+```{r t1s2}
+subplots(nrow=2, ncol=3)
+#表1情况2（有常数项）
+t1s2 <-  function(W,r){
+  DFstats <- ((W[1]^2-1)/2-W[1]*mean(W))/(mean(W^2)-mean(W)^2)
+  return(DFstats)
+}
+table1.s2 <- getCriticalValue(t1s2,plotDensity)
+print(table1.s2)
+```
+
+## $t(\hat\rho)$模拟结果
+原假设$\alpha=0,\rho=1$成立时，表2统计量极限分布$t(\hat\rho)=\frac{\frac 1 2(W^2(1)-1)-W(1)\int_0^1W(r)dr}{(\int_0^1W^2(r)dr-(\int_0^1W(r)dr)^2)^\frac 1 2}$.
+```{r t2s2}
+subplots(nrow=2, ncol=3)
+#表2情况2（有常数项）
+t2s2 <-  function(W,r){
+  DFstats <- ((W[1]^2-1)/2-W[1]*mean(W))/sqrt(mean(W^2)-mean(W)^2)
+  return(DFstats)
+}
+table2.s2 <- getCriticalValue(t2s2,plotDensity)
+print(table2.s2)
+```
+
+
+## $F_T$模拟结果
+在$F$检验时，原假设为$\alpha=0$。
+
+当原假设成立时（即不存在漂移项），模型变为$y_t=\rho y_{t-1}+\epsilon_t$，此时$\tilde R^2=\sum_{t=1}^T(y_t-\rho y_{t-1})^2$。
+
+当备择假设成立时（即存在漂移项），模型变为$y_t=\alpha+\rho y_{t-1}+\epsilon_t$，此时$\hat R^2=\sum_{t=1}^T(y_t-\alpha-\rho y_{t-1})^2$。
+
+检验统计量$F_T=\frac{(\tilde R^2-\hat R^2)/2}{\hat R^2/(T-2)}$。
+```{r t3s2}
+subplots(nrow=2, ncol=3)
+#表3情况2（有常数项和趋势项）
+table3.s2 <- getCriticalValue(delta.f=F)
+print(table3.s2)
+```
+
+
+# 情况四
+在情况四中，所用模型为$y_t=\alpha+\rho y_{t-1}+\delta t+\epsilon_t$。
+$$H_0:\delta=0,\rho=1$$
+$$H_1:\delta\ne0,\rho\lt1$$
+
+## $T(\hat \rho_T-1)$模拟结果
+原假设$\delta=0,\rho=1$成立时，表1统计量极限分布：$T(\hat \rho_T-1)=\frac 1 {|A|}\{\frac 1 6 W(1)\int_0^1W(r)dr-\frac 1 2 W(1)\int_0^1rW(r)dr+\frac 1 {24}(W^2(1)-1)+\int_0^1W(r)dr\int_0^1rW(r)dr-\frac 1 2(\int_0^1 W(r)dr)^2\}$.
+
+其中$A=\left(\begin{array}\\
+1 & \int_0^1W(r)dr & \frac 1 2\\
+\int_0^1W(r)dr & \int_0^1W^2(r)dr & \int_0^1rW(r)dr\\
+\frac 1 2 & \int_0^1rW(r)dr & \frac 1 3\\
+\end{array}\right)$.（陆懋祖，1999，p75-76）
+
+```{r t1s4}
+subplots(nrow=2, ncol=3)
+#表1情况4（有常数项和趋势项）
+t1s4 <- function(W,r){
+  A <- matrix(c(1,mean(W),1/2,mean(W),mean(W^2),mean(r*W),1/2,mean(r*W),1/3),nrow=3)
+  DFstats <- 1/det(A)*(1/6*W[1]*mean(W)-1/2*W[1]*mean(r*W)+1/24*(W[1]^2-1)+mean(W)*mean(r*W)-1/2*mean(W)^2)
+  return(DFstats)
+}
+table1.s4 <- getCriticalValue(t1s4,plotDensity)
+print(table1.s4)
+```
+
+## $t(\hat\rho)$模拟结果
+原假设$\delta=0,\rho=1$成立时，表2统计量极限分布:$t(\hat\rho)=\frac{\sqrt3}{12}|A|^{-\frac{1}{2}}\{4 W(1)\int_0^1W(r)dr-12W(1)\int_0^1rW(r)dr+(W^2(1)-1)+24\int_0^1W(r)dr\int_0^1rW(r)dr-12(\int_0^1 W(r)dr)^2\}$. 矩阵A同上。
+
+```{r t2s4}
+subplots(nrow=2, ncol=3)
+#表2情况4（有常数项和趋势项）
+t2s4 <- function(W,r){
+  A <- matrix(c(1,mean(W),1/2,mean(W),mean(W^2),mean(r*W),1/2,mean(r*W),1/3),nrow=3)
+  DFstats <- sqrt(3)/12*(det(A))^(-1/2)*(4*W[1]*mean(W)-12*W[1]*mean(r*W)+(W[1]^2-1)+24*mean(W)*mean(r*W)-12*mean(W)^2)
+  return(DFstats)
+}
+table2.s4 <- getCriticalValue(t2s4,plotDensity)
+print(table2.s4)
+```
+
+## $F_T$模拟结果
+在$F$检验时，原假设为$\delta=0$。
+
+当原假设成立时（即不存在确定性趋势），模型变为$y_t=\alpha+\rho y_{t-1}+\epsilon_t$，此时$\tilde R^2=\sum_{t=1}^T(y_t-\alpha-\rho y_{t-1})^2$。
+
+当备择假设成立时（即存在确定性趋势），模型变为$y_t=\alpha+\rho y_{t-1}+\delta t+\epsilon_t$，此时$\hat R^2=\sum_{t=1}^T(y_t-\alpha-\rho y_{t-1}-\delta t)^2$。
+
+检验统计量$F_T=\frac{(\tilde R^2-\hat R^2)/2}{\hat R^2/(T-3)}$。
+
+```{r t3s4}
+subplots(nrow=2, ncol=3)
+#表3情况4（有常数项和趋势项）
+table3.s4 <- getCriticalValue(delta.f=T)
+print(table3.s4)
+```
+
+# 结论和不足
+本文根据极限分布模拟了$T(\hat \rho_T-1)$和$t(\hat\rho)$的临界值表1和2。由于不知道$F_T$统计量的具体极限分布（维纳过程的泛函），无法根据分布模拟临界值表。于是本文模拟$y_t$，用回归分析的方法计算得到限制和非限制模型下的残差平方和，并据此构造统计量$F_T$。
+
+但本文模拟的三张表与《高等时间序列计量经济学》书中的表格有差距。对于$T(\hat \rho_T-1)$和$t(\hat\rho)$临界值表的模拟，可能是用部分和近似维纳过程的时候与原文方法有出入；而对于$F_T$临界值表的模拟，可能是由于初始化$y_0, \alpha, \rho, \delta$的方式与原文不同。
+
+三张临界值表结果如下：
+```{r conclusion}
+#表1
+rbind(table1.s1, table1.s2, table1.s4)
+
+#表2
+rbind(table2.s1, table2.s2, table2.s4)
+
+#表3
+rbind(table3.s2,table3.s4)
+```
+
+参考资料
+
+[1] 陆懋祖. (1999) 高等时间序列计量经济学. 上海: 上海人民出版社.
