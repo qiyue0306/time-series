@@ -1,0 +1,226 @@
+---
+title: "全球平均气温时间序列分析"
+author: "齐玥3120319078"
+date: "2021年3月24日"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: cerulean
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 数据描述
+
+全球气候变化对自然生态系统和经济社会的影响正在日益凸显，全球气候风险持续上升。世界经济论坛发布的《全球风险报告2020》指出，到本世纪末，全球气温有望至少上升3摄氏度，是气候专家警告的两倍气候变化。相关的热带气旋、高温热浪、干旱等极端天气与气候事件的频发，以及气候政策无法达到预期等环境风险日益突出并将继续发展，未来气候将持续变暖并可能造成全球风险加剧，引发系统性风险的改变，对全球发展造成深远影响。
+
+本文从NOAA网站获取了1948年1月至2019年7月的月度全球平均气温数据（华氏度），将其转换成时间序列数据（摄氏度），并对该时间序列做平稳性检验和建模。
+
+数据来源：<https://www.psl.noaa.gov/data/climateindices/>。
+
+```{r t1}
+data <- read.csv("C:\\Users\\12786\\Desktop\\data.csv")
+temperature <- ts((data$temperature-32)/1.8,start=c(1948,1),frequency = 12)
+n = length(temperature)
+print(n)
+start(temperature)
+end(temperature)
+```
+
+# 时间序列图
+
+下面画了全球平均气温的时间序列图和时间序列分解图，后者分解出了时间序列的趋势效应、季节效应和随机效应，并将其和原始观察序列画在一起。
+
+下面两张图表明，全球平均气温呈现上升的趋势，从1950年的-20摄氏度上升到2019年的30度左右，这是全球气候变暖的直接证据。此外，全球平均气温存在明显的季节效应。地球公转使各个季节地球离太阳的角度距离不同，所以一年内夏季温度高，冬季温度低，从而使气温呈现季节效应。
+
+```{r plots, echo=FALSE}
+plot.ts(temperature,main="全球月平均气温时间序列图")
+plot(decompose(temperature))
+```
+
+# 平稳性检验
+
+时间序列图表明全球平均气温均值不为0，且有明显的趋势，因此时间序列不平稳。下面对原始数据差分，并重新画时间序列图。
+
+由时间序列可以看出差分后的全球平均气温在0附近波动，且无明显趋势和季节效应。下一步对差分后的时间序列做单位根检验(ADF test)，发现检验统计量Dickey-Fuller值为-12.856，对应的p值为0.01<0.05，拒绝原假设，说明在5%的显著性水平下有充分的证据表明该时间序列平稳。
+
+```{r stationary, echo=TRUE}
+dtemperature <- diff(temperature)
+plot.ts(dtemperature,main="d(全球月平均气温)时间序列图")
+library(tseries)
+adf.test(dtemperature)
+mean(dtemperature)
+```
+
+# 平稳时间序列建模
+
+## ACF和PACF图
+
+结果表明，自相关系数在滞后4阶后始终在置信区间内，呈现截尾。而偏自相关系数则不规则地波动，呈现拖尾。从ACF和PACF图可以初步推断，差分后的全球平均气温服从MA(4)模型。
+
+```{r model, echo=TRUE}
+acf(dtemperature)
+pacf(dtemperature)
+```
+
+## Bartlett公式
+MA模型自相关系数截尾。由Bartlett公式可知，当k>q且N充分大时，自相关系数的分布为渐进正态分布，即\(\rho_k \asymp N(0,\frac 1 N(1+2\sum_{l=1}^q\rho_l^2))\)。
+
+因此，若存在q使得\(p=P(|\rho_k|)\le \frac{2}{\sqrt{n}}\sqrt{1+2\sum_{l=1}^q\rho_l^2}=95.45\%\)，则该平稳时间序列服从MA(q)模型。
+
+下文编写了bartlett.ma(data,n,q)函数，输入平稳时间序列data和待检验的MA模型阶数q，输出上述公式的概率p。
+
+通过拟合1-4阶的MA模型，本文发现MA(1)和MA(2)模型的概率p为93.33%<95.45%。而从MA(3)到MA(4)模型的概率p为96.67%>95.45%，此时原假设成立，说明MA模型至少为MA(3)。
+
+通过ACF和PACF图，本文认为平稳时间序列服从MA(4)，而通过渐进分布本文判断平稳时间序列至少为MA(3)。下文则对模型为MA(3)还是MA(4)进行进一步探讨。
+```{r method1, echo=TRUE}
+#输入平稳时间序列data、MA模型阶数q，输出概率
+bartlett.ma <- function(data, q){
+  #先求k=1,2,...,q,q+1,...,q+M的自相关系数cor.vec
+  cor.vec <- c()
+  n <- length(data)
+  M <- ceiling(n^0.5)
+  for(i in 1:(q+M)){
+    cor.n <- cor(data[1:(n-i)],data[(1+i):n])
+    cor.vec <- c(cor.vec, cor.n)
+  }
+  #求渐进正态分布的标准差std
+  std <- 1/n^0.5*(1+2*sum(cor.vec[1:q]^2))^0.5
+  #求自相关系数的绝对值<=标准差的概率p
+  cnt <- 0
+  for (j in (q+1):(q+M)){
+    if(abs(cor.vec[j])<=2*std){
+      cnt = cnt + 1
+    }
+  }
+  p <- round(cnt/M,4)
+  return(p)
+}
+paste(bartlett.ma(dtemperature,1),bartlett.ma(dtemperature,2),bartlett.ma(dtemperature,3),bartlett.ma(dtemperature,4))
+```
+
+## 残差方差图
+下文编写了拟合平稳时间序列MA(2)模型的最小二乘估计函数ols.ma2，其中残差方差由\(\hat\sigma_a^2=\frac{RSS}{n-q}=\frac{\sum_{t=1}^n(Y_t-\hat Y_t)^2}{n-q}\)计算得到。
+
+为了计算残差，本文对MA模型进行最小二乘估计。具体思路如：
+
+*  假定真实模型为\(Y_t=a_t-\theta_1 a_{t-1}-\theta_2 a_{t-2}\)。
+*  给定之前的扰动项，当期扰动项可以表示成$a_t=Y_t+\theta_1a_{t-1}+\theta_2a_{t-2}$。
+*  令$a_{-1}=a_0=0$，可以得到$a_1=Y_1, a_2=Y_2+\theta_1a_1,...,a_n=Y_n+\theta_1a_{n-1}+\theta_2a_{n-2}$。
+*  在可逆范围(-1,1)内搜索使误差平方和最小的参数$\theta_1, \theta_2$。
+
+此处应注意时间序列模型中的扰动项是无法直接观测到的，无法用经典线性回归中正规方程组的方式计算。
+```{r method2, echo=TRUE}
+#最小二乘法估计MA(2)模型，输入ma模型参数步长，输出系数和残差方差
+ols.ma2 <- function(data,by1, by2){
+  min.resid.sq <- 100000000
+  mu <- mean(data)
+  coef <- c()
+  for(theta1 in seq(-0.9999,0.9999,by=by1)){
+    for(theta2 in seq(-0.9999,0.99999,by=by2)){
+      resid.sq <- 0
+      ai <- rep(0,2) #conditional on a_0=a_{-1}=0
+      for(i in 1:(n-1)){
+        aj <- mu + data[i]+theta1 * ai[1] + theta2 * ai[2]
+        resid.sq = resid.sq + aj^2
+        ai <- c(ai[2],aj)
+      }
+      if(resid.sq<min.resid.sq){
+      min.resid.sq = resid.sq
+      coef = c(theta1, theta2, mu)
+      }
+    }
+  }
+  result <- c(coef,min.resid.sq/(length(data)-3))#有常数项，因此-3
+  return (round(result,4))
+}
+
+ols.ma2(dtemperature,0.02,0.02)
+arima(dtemperature,c(0,0,2))
+```
+
+在搜索更高维的参数空间时，由于最小二乘估计的时间复杂度过大\(O(NM^q),M\)为每轮迭代次数，此处不再采用最小二乘法估计MA(3)及更高阶的模型，而是用arima函数用BFGS迭代法估计MA(q)模型的系数并得到拟合后的残差值。
+
+下文写了计算残差方差的函数iter.resid和残差方差图的函数resid.plot。我们得到MA(3)模型的残差方差为36.691，MA(4)模型的残差方差为36.732，MA(3)模型更小。
+
+从滞后10阶的残差方差图，可以看到随着滞后阶的增加，模型的残差方差始终下降，仅在MA(4)和MA(10)模型处略有上升。
+
+```{r method21, echo=TRUE}
+#输入平稳时间序列data、MA模型滞后阶数model.lag，输出残差方差
+iter.resid <- function(data,model.lag){
+  m <- arima(data, c(0,0,model.lag))
+  resid.a <- (sum((m$residuals)^2))/(n-model.lag)
+  return(round(resid.a,4))
+}
+
+#计算MA(3)和MA(4)模型的残差方差
+resid.ma3 <- iter.resid(dtemperature,3)
+resid.ma4 <- iter.resid(dtemperature,4)
+paste(resid.ma3, resid.ma4)
+
+#输入平稳时间序列data、残差方差图的最大滞后阶数max.lag，输出残差方差图
+resid.plot <- function(data,max.lag){
+  resid <- c() #残差方差
+  q <- c() #MA模型阶数
+  for(i in 1:max.lag){
+    q <- c(q, i)
+    resid.a <- iter.resid(data,i)
+    resid <- c(resid, resid.a)
+  }
+  
+  return(plot(q,resid,type='l',xlab="滞后阶数", ylab = paste("残差方差")))
+}
+
+resid.plot(dtemperature,10)
+```
+
+## 最佳准则函数
+下文以AIC为最佳准则函数判断MA模型阶数，其中\(AIC(q)=ln\hat \sigma_a^2(q)+2\frac qN\)。
+
+先计算了MA(3)和MA(4)模型的AIC，得到MA(3)的AIC为3.610，MA(4)的AIC为3.613，MA(3)模型更小。随后画了滞后1-10阶的MA模型的AIC，发现比残差房差图的轮廓更清晰。在加上对参数个数的惩罚项后，各MA模型的优劣得到更好地区分。
+```{r method3, echo=TRUE}
+aic.ma3 <- log(resid.ma3)+2*3/length(dtemperature)
+aic.ma4 <- log(resid.ma4)+2*4/length(dtemperature)
+paste(aic.ma3, aic.ma4)
+
+#输入平稳时间序列data、残差方差图的最大滞后阶数max.lag，输出不同阶数模型的AIC图
+aic.plot <- function(data,max.lag){
+  aic.vec <- c() #模型AIC
+  q <- c() #MA模型阶数
+  for(i in 1:max.lag){
+    q <- c(q, i)
+    resid.a <- iter.resid(data,i)
+    aic <- log(resid.a)+2*i/length(data)
+    aic.vec <- c(aic.vec, aic)
+  }
+  return(plot(q,aic.vec,type='l',xlab="滞后阶数", ylab = paste("AIC")))
+}
+
+aic.plot(dtemperature,10)
+round(arima(dtemperature, c(0,0,3))$coef,4)
+```
+
+
+# 结论与不足
+
+全球气候变暖会不仅危害自然生态系统的平衡，还会威胁人类的生存。本文对全球平均气温进行时间序列分析，发现其呈现逐年上升的趋势，从1950年的-20摄氏度上升到2019年的30度左右，全球气候变暖并不是危言耸听。除去趋势效应，全球平均气温也呈现明显的季节效应，原始时间序列不平稳。在对其差分后，对差分的序列进行ADF检验，发现差分后的时间序列平稳。
+
+在对平稳时间序列建模时，本文对老师讲的三种方法都有所尝试。
+
+第一，本文先画了时间序列的ACF和PACF图，发现自相关系数4阶截尾且偏自相关系数拖尾，由此初步推断时间序列服从MA(4)模型。之后，本文根据Bartlett公式，计算了自相关系数在\(3\sigma\)区间的概率，发现MA(3)模型概率p为96.67%，推断时间序列至少服从MA(3)模型。
+
+第二，本文通过残差方差图对MA模型定阶，写了MA(2)模型的最小二乘估计方法，用arima函数计算了不同阶数MA模型的残差，并进一步计算残差方差。本文发现，\(\hat\sigma_a^2(3)=36.691<\hat\sigma_a^2(4)=36.732\)，滞后10阶以内的MA模型的残差方差始终呈现下降趋势。
+
+第三，本文计算了MA模型的AIC，得到\(AIC(3)=3.610<AIC(4)=3.613\)。
+
+经过上述分析，本文认为MA(3)模型能最好地拟合差分后的全球平均气温，最终得到的模型为：
+
+\begin{align*}
+dtemp_t=0.062+a_t-0.478a_{t-1}-0.029a_{t-2}-0.164a_{t-3}
+\end{align*}
+
+本文的对于高阶MA模型的求解采取了调包的方式，下一步可以学习非线性方程组的求解和常见的优化算法。
